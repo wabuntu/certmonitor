@@ -1,0 +1,154 @@
+# certmonitor
+
+TUI that connects to a list of host:port targets over TLS and ranks them by
+days until their certificate expires — like `top`, but for certificate
+expiry.
+
+```
+$ certmonitor targets.txt                  # interactive TUI
+$ certmonitor --once targets.txt           # one-shot report for cron/systemd
+$ certmonitor --interval 300 targets.txt   # auto-rescan every 5 minutes
+```
+
+`targets.txt` is a plain text file, one target per line, as `host` or
+`host:port` (bare hosts default to `443`). Blank lines and lines starting
+with `#` are ignored:
+
+```
+example.com
+example.com:8443
+internal-app.local:443
+# a comment
+```
+
+Since it's a plain TLS client connecting outward, `certmonitor` can check
+any host it can reach over the network — a public website just as easily as
+an internal server — no SSH or agent installed on the target required.
+
+## Reading the table
+
+Each row is colored by days-left: green (OK), yellow (`--warn-days`,
+default 30), red (`--critical-days`, default 7, or already expired, or the
+check itself failed — e.g. connection refused, DNS failure, TLS handshake
+error). Select a row with `↑`/`↓` and press `Enter` for a detail popup with
+the full subject, issuer, and a short renewal hint guessed from who issued
+the cert (e.g. Let's Encrypt certs suggest `certbot renew`). The hint is a
+guess based only on what the TLS handshake reveals, not real knowledge of
+how the target server manages its certs — a starting point, not a command
+to run blindly.
+
+Keys:
+
+- `↑`/`↓`: move the selection
+- `Enter`: show details for the selected certificate
+- `r`: rescan now
+- `q` / `Esc`: quit
+
+## Config file
+
+Repeating `--warn-days`, `--critical-days`, etc. on every invocation gets
+old fast, especially for a scheduled job. Put them in
+`~/.config/certmonitor/config.toml` instead:
+
+```toml
+warn_days = 30
+critical_days = 7
+timeout = 5
+interval = 300
+```
+
+A `--config <path>` flag points at a different file. Any flag passed on the
+command line overrides the same setting in the config file.
+
+## Scheduled checks and alerting
+
+`--once` runs a single scan, prints a plain aligned report (colored when
+run in a real terminal, plain when piped/logged), and exits with a
+Nagios-style code: `0` if everything is OK, `1` if anything is in warning
+range, `2` if anything is critical, expired, or unreachable. That exit code
+is the hook for alerting — wire up the actual notification (email, Slack,
+PagerDuty, ...) through whatever your scheduler already uses for failed-job
+alerts, rather than certmonitor reinventing it.
+
+### Linux: systemd timer
+
+```ini
+# /etc/systemd/system/certmonitor.service
+[Unit]
+Description=certmonitor daily certificate check
+OnFailure=certmonitor-alert.service   # your own notification unit
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/certmonitor --once /etc/certmonitor/targets.txt
+```
+
+```ini
+# /etc/systemd/system/certmonitor.timer
+[Unit]
+Description=Run certmonitor daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```
+$ sudo systemctl enable --now certmonitor.timer
+```
+
+`OnFailure=` fires whenever the service exits non-zero (exit code 1 or 2
+above) — point it at your own unit that sends the actual notification.
+
+### Windows: Task Scheduler
+
+No need to register it as a Windows service — a daily scheduled task
+calling `--once` is the direct equivalent of the systemd timer above:
+
+```
+schtasks /create /tn "certmonitor" /sc daily /st 09:00 ^
+  /tr "C:\path\to\certmonitor.exe --once C:\path\to\targets.txt"
+```
+
+Check the exit code from whatever wraps the task (a follow-up action, a
+monitoring agent, or a small wrapper script) to trigger a real alert.
+
+### macOS: launchd
+
+```xml
+<!-- ~/Library/LaunchAgents/com.wabuntu.certmonitor.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.wabuntu.certmonitor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/certmonitor</string>
+    <string>--once</string>
+    <string>/usr/local/etc/certmonitor/targets.txt</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>9</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+</dict>
+</plist>
+```
+
+```
+$ launchctl load ~/Library/LaunchAgents/com.wabuntu.certmonitor.plist
+```
+
+## Install
+
+- Single binary (Linux): https://github.com/wabuntu/certmonitor/tree/main/binaries
+- Windows: `certmonitor-<version>-windows-x86_64.exe` / `.zip` —
+  cross-built locally via `./build-windows.sh` (mingw-w64, no CI)
+- macOS (Intel + Apple Silicon): built once via a throwaway private GitHub
+  Actions repo (no local macOS cross-toolchain exists on Linux)

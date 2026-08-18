@@ -1,0 +1,22 @@
+[package]
+name = "certmonitor"
+version = "0.1.0"
+authors = ["wabuntu <to.wabuntu@proton.me>"]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/wabuntu"
+repository = "https://github.com/wabuntu/certmonitor"
+documentation = "https://docs.rs/certmonitor"
+description = """
+TUI that connects to a list of host:port targets over TLS and ranks them
+by days until their certificate expires, like `top` for certificate expiry.
+"""
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+rustls = "0.23"
+x509-parser = "0.16"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
