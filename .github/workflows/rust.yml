@@ -1,0 +1,51 @@
+name: Main
+
+on:
+  push:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test --verbose
+      - run: cargo clippy --all-targets --verbose -- -D warnings
+
+  release-please:
+    name: Execute release chores
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+    steps:
+      - uses: google-github-actions/release-please-action@v3
+        id: release
+        with:
+          release-type: rust
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: release-please
+    if: needs.release-please.outputs.created
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish
+        run: >
+          cargo publish
+          --verbose
+          --locked
+          --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
