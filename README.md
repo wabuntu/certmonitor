@@ -5,9 +5,10 @@ days until their certificate expires — like `top`, but for certificate
 expiry.
 
 ```
-$ certmonitor targets.txt                  # interactive TUI
-$ certmonitor --once targets.txt           # one-shot report for cron/systemd
-$ certmonitor --interval 300 targets.txt   # auto-rescan every 5 minutes
+$ certmonitor targets.txt                        # interactive TUI
+$ certmonitor --once targets.txt                 # one-shot report for cron/systemd
+$ certmonitor --interval 300 targets.txt         # auto-rescan every 5 minutes
+$ certmonitor --serve 0.0.0.0:8080 targets.txt   # auto-refreshing web page instead of the TUI
 ```
 
 `targets.txt` is a plain text file, one target per line, as `host` or
@@ -43,6 +44,36 @@ Keys:
 - `Enter`: show details for the selected certificate
 - `r`: rescan now
 - `q` / `Esc`: quit
+
+## Web mode
+
+`--serve <addr>` (e.g. `--serve 0.0.0.0:8080`) skips the TUI and instead
+serves the same ranked table as a plain HTML page at `/`, auto-refreshing
+via `<meta http-equiv="refresh">` every `--interval` seconds (default 300
+in this mode). A background thread rescans on that schedule; requests are
+always answered instantly from whatever the last scan left behind, never
+blocked on a live check.
+
+### Docker
+
+```
+$ docker build -t certmonitor .
+$ docker run -d -p 8080:8080 \
+    -v /path/to/targets.txt:/etc/certmonitor/targets.txt:ro \
+    certmonitor
+```
+
+The image's default command is `--serve 0.0.0.0:8080
+/etc/certmonitor/targets.txt`, so mounting a targets file at that path and
+publishing port 8080 is all that's needed. Override the command to change
+the interval or thresholds, e.g.:
+
+```
+$ docker run -d -p 8080:8080 \
+    -v /path/to/targets.txt:/etc/certmonitor/targets.txt:ro \
+    certmonitor --serve 0.0.0.0:8080 --interval 60 --warn-days 14 \
+    /etc/certmonitor/targets.txt
+```
 
 ## Config file
 

@@ -1,4 +1,5 @@
 mod scan;
+mod web;
 
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -7,7 +8,9 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
-use scan::{CertResult, Status, Target, check_all, check_all_async, parse_target};
+use scan::{
+    CertResult, Severity, Status, Target, check_all, check_all_async, parse_target, severity,
+};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -62,6 +65,13 @@ struct Args {
     /// own failure notifications.
     #[arg(long)]
     once: bool,
+
+    /// Serve an auto-refreshing HTML page of the same table at this
+    /// address (e.g. `0.0.0.0:8080`) instead of showing the TUI. Rescans
+    /// every `--interval` seconds in the background (default 300);
+    /// requests are always answered from the latest finished scan.
+    #[arg(long)]
+    serve: Option<String>,
 }
 
 /// Every field is optional, so a config file only needs to set what it
@@ -189,6 +199,15 @@ fn main() {
         std::process::exit(run_once(&targets, timeout, warn_days, critical_days));
     }
 
+    if let Some(addr) = &args.serve {
+        let interval = interval.unwrap_or(300);
+        if let Err(e) = web::serve(addr, targets, timeout, warn_days, critical_days, interval) {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let mut app = App::new(warn_days, critical_days);
 
     eprintln!("Scanning {} targets ...", targets.len());
@@ -209,22 +228,6 @@ fn main() {
     if let Err(e) = res {
         eprintln!("Error: {}", e);
         std::process::exit(1);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Severity {
-    Ok,
-    Warning,
-    Critical,
-}
-
-fn severity(result: &CertResult, warn_days: i64, critical_days: i64) -> Severity {
-    match result.status {
-        Status::Error(_) => Severity::Critical,
-        Status::Ok(days) if days < critical_days => Severity::Critical,
-        Status::Ok(days) if days < warn_days => Severity::Warning,
-        Status::Ok(_) => Severity::Ok,
     }
 }
 

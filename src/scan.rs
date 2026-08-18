@@ -63,6 +63,22 @@ impl ServerCertVerifier for AcceptAnyCert {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    Ok,
+    Warning,
+    Critical,
+}
+
+pub fn severity(result: &CertResult, warn_days: i64, critical_days: i64) -> Severity {
+    match result.status {
+        Status::Error(_) => Severity::Critical,
+        Status::Ok(days) if days < critical_days => Severity::Critical,
+        Status::Ok(days) if days < warn_days => Severity::Warning,
+        Status::Ok(_) => Severity::Ok,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
     /// Days until `not_after` (negative means already expired).
