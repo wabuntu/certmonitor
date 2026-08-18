@@ -15,8 +15,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo test --verbose
+      - name: Run tests with coverage
+        run: >
+          cargo install cargo-tarpaulin
+          && cargo tarpaulin
+          --verbose
+          --out Xml
+          --engine llvm
+          --skip-clean
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v3
       - run: cargo clippy --all-targets --verbose -- -D warnings
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit dependencies
+        run: cargo audit
 
   release-please:
     name: Execute release chores

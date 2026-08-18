@@ -1,0 +1,10 @@
+# cargo-audit config (https://docs.rs/cargo-audit).
+#
+# Add RUSTSEC IDs here only after actually reviewing the advisory and
+# confirming it doesn't apply to this project (e.g. an unreachable code
+# path) or that there's no fix available and the risk is accepted — never
+# to silence something unreviewed.
+[advisories]
+ignore = [
+    # "RUSTSEC-0000-0000",
+]
