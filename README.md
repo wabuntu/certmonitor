@@ -147,8 +147,13 @@ $ launchctl load ~/Library/LaunchAgents/com.wabuntu.certmonitor.plist
 
 ## Install
 
-- Single binary (Linux): https://github.com/wabuntu/certmonitor/tree/main/binaries
-- Windows: `certmonitor-<version>-windows-x86_64.exe` / `.zip` —
+All of the following are in
+https://github.com/wabuntu/certmonitor/tree/main/binaries:
+
+- **Linux**: `.deb`, `.rpm`, or the raw `certmonitor-<version>-linux-x86_64`
+  binary — built locally via `./build-linux.sh` (needs `cargo-deb` and
+  `rpmbuild`)
+- **Windows**: `certmonitor-<version>-windows-x86_64.exe` / `.zip` —
   cross-built locally via `./build-windows.sh` (mingw-w64, no CI)
-- macOS (Intel + Apple Silicon): built once via a throwaway private GitHub
-  Actions repo (no local macOS cross-toolchain exists on Linux)
+- **macOS** (Intel + Apple Silicon): built once via a throwaway private
+  GitHub Actions repo (no local macOS cross-toolchain exists on Linux)
