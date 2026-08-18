@@ -11,6 +11,8 @@ description = """
 TUI that connects to a list of host:port targets over TLS and ranks them
 by days until their certificate expires, like `top` for certificate expiry.
 """
+categories = ["command-line-utilities", "network-programming"]
+keywords = ["tls", "certificate", "monitoring", "tui", "ssl"]
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
