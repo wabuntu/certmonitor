@@ -4,6 +4,10 @@ TUI that connects to a list of host:port targets over TLS and ranks them by
 days until their certificate expires — like `top`, but for certificate
 expiry.
 
+<img src="https://raw.githubusercontent.com/wabuntu/certmonitor/main/docs/list.png" alt="certmonitor's TUI listing certificates ranked by days until expiry" width="700">
+<img src="https://raw.githubusercontent.com/wabuntu/certmonitor/main/docs/detail.png" alt="certmonitor's certificate detail popup, showing subject, issuer, and a renewal hint" width="700">
+<img src="https://raw.githubusercontent.com/wabuntu/certmonitor/main/docs/web.png" alt="certmonitor's --serve web page showing the same ranked table in a browser" width="700">
+
 ```
 $ certmonitor targets.txt                        # interactive TUI
 $ certmonitor --once targets.txt                 # one-shot report for cron/systemd
