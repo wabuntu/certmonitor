@@ -13,6 +13,7 @@ by days until their certificate expires, like `top` for certificate expiry.
 """
 categories = ["command-line-utilities", "network-programming"]
 keywords = ["tls", "certificate", "monitoring", "tui", "ssl"]
+exclude = ["binaries/*", "target/*"]
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
