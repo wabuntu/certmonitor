@@ -1,7 +1,6 @@
 # certmonitor
 
 [![Crates.io](https://img.shields.io/crates/v/certmonitor.svg)](https://crates.io/crates/certmonitor)
-[![docs.rs](https://img.shields.io/docsrs/certmonitor)](https://docs.rs/certmonitor)
 [![CI](https://github.com/wabuntu/certmonitor/actions/workflows/rust.yml/badge.svg)](https://github.com/wabuntu/certmonitor/actions/workflows/rust.yml)
 
 TUI that connects to a list of host:port targets over TLS and ranks them by

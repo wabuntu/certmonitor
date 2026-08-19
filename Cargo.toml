@@ -6,7 +6,6 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/wabuntu"
 repository = "https://github.com/wabuntu/certmonitor"
-documentation = "https://docs.rs/certmonitor"
 description = """
 TUI that connects to a list of host:port targets over TLS and ranks them
 by days until their certificate expires, like `top` for certificate expiry.
