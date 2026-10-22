@@ -1,3 +1,4 @@
+use crate::revocation::Revocation;
 use crate::scan::{CertResult, Severity, Status, Target, check_all, severity};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,6 +20,7 @@ pub fn serve(
     warn_days: i64,
     critical_days: i64,
     interval: u64,
+    check_revocation: bool,
 ) -> std::io::Result<()> {
     let state = Arc::new(Mutex::new(SharedState {
         results: Vec::new(),
@@ -30,7 +32,7 @@ pub fn serve(
         let targets = targets.clone();
         std::thread::spawn(move || {
             loop {
-                let results = check_all(&targets, timeout);
+                let results = check_all(&targets, timeout, check_revocation);
                 let mut guard = state.lock().unwrap();
                 guard.results = results;
                 guard.last_scan = Some(Instant::now());
@@ -94,13 +96,23 @@ fn render_page(
             Status::Error(_) => "-".to_string(),
         };
         let expires = r.not_after.as_deref().unwrap_or("-");
-        let hint = match &r.status {
-            Status::Error(e) => e.clone(),
-            Status::Ok(_) => r.renewal_hint().to_string(),
+        let hint = match (&r.status, &r.revocation) {
+            (Status::Error(e), _) => e.clone(),
+            (_, Revocation::Revoked { .. } | Revocation::Unknown(_)) => r.revocation.detail(),
+            _ => r.renewal_hint().to_string(),
+        };
+        let rev_color = match r.revocation {
+            Revocation::Revoked { .. } => "#cf222e",
+            Revocation::Unknown(_) => "#9a6700",
+            Revocation::Ok => "#1a7f37",
+            Revocation::NotChecked => "#8b949e",
         };
         rows.push_str(&format!(
-            "<tr style=\"color:{color}\"><td>{label}</td><td>{}</td><td>{days}</td><td>{expires}</td><td>{hint}</td></tr>\n",
+            "<tr style=\"color:{color}\"><td>{label}</td><td>{}</td><td>{days}</td><td>{expires}</td><td style=\"color:{rev_color}\" title=\"{}\">{}</td><td>{}</td></tr>\n",
             html_escape(&format!("{}:{}", r.target.host, r.target.port)),
+            html_escape(&r.revocation.detail()),
+            r.revocation.label(),
+            html_escape(&hint),
         ));
     }
 
@@ -131,7 +143,7 @@ fn render_page(
 <body>
 <h1>certmonitor — {} targets, {critical} critical, {warning} warning ({scanned_note})</h1>
 <table>
-<tr><th>Status</th><th>Target</th><th>Days Left</th><th>Expires</th><th>Hint</th></tr>
+<tr><th>Status</th><th>Target</th><th>Days Left</th><th>Expires</th><th>Revocation</th><th>Hint</th></tr>
 {rows}</table>
 </body>
 </html>
@@ -144,4 +156,5 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
