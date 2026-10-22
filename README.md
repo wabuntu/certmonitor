@@ -2,6 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/certmonitor.svg)](https://crates.io/crates/certmonitor)
 [![CI](https://github.com/wabuntu/certmonitor/actions/workflows/rust.yml/badge.svg)](https://github.com/wabuntu/certmonitor/actions/workflows/rust.yml)
+[![Security audit](https://github.com/wabuntu/certmonitor/actions/workflows/audit.yml/badge.svg)](https://github.com/wabuntu/certmonitor/actions/workflows/audit.yml)
 
 TUI that connects to a list of host:port targets over TLS and ranks them by
 days until their certificate expires — like `top`, but for certificate
@@ -232,6 +233,18 @@ monitoring agent, or a small wrapper script) to trigger a real alert.
 ```
 $ launchctl load ~/Library/LaunchAgents/com.wabuntu.certmonitor.plist
 ```
+
+## Quality checks
+
+Every push runs these checks in GitHub Actions:
+
+- `cargo fmt --check` for formatting.
+- Tests with coverage (`cargo tarpaulin`).
+- `cargo clippy` with all warnings treated as errors.
+- `cargo audit` against the RustSec advisory database.
+
+A separate job runs `cargo audit` every Monday, even when the code does not
+change. New advisories for our dependencies show up there first.
 
 ## Install
 
