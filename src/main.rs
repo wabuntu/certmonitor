@@ -1,3 +1,4 @@
+mod revocation;
 mod scan;
 mod web;
 
@@ -8,6 +9,7 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
+use revocation::Revocation;
 use scan::{
     CertResult, Severity, Status, Target, check_all, check_all_async, parse_target, severity,
 };
@@ -72,6 +74,13 @@ struct Args {
     /// requests are always answered from the latest finished scan.
     #[arg(long)]
     serve: Option<String>,
+
+    /// Skip the CRL revocation check (on by default). Use this offline or
+    /// when CRL downloads are blocked. The check downloads each CA's CRL
+    /// over HTTP(S), verifies its signature, and looks for every cert in
+    /// the chain on it.
+    #[arg(long)]
+    no_revocation: bool,
 }
 
 /// Every field is optional, so a config file only needs to set what it
@@ -82,6 +91,8 @@ struct FileConfig {
     warn_days: Option<i64>,
     critical_days: Option<i64>,
     interval: Option<u64>,
+    /// `false` turns off the CRL revocation check, like `--no-revocation`.
+    revocation: Option<bool>,
 }
 
 /// Load `explicit_path`, or `~/.config/certmonitor/config.toml` if none was
@@ -194,14 +205,29 @@ fn main() {
         .or(file_config.critical_days)
         .unwrap_or(7);
     let interval = args.interval.or(file_config.interval);
+    let check_revocation = !args.no_revocation && file_config.revocation.unwrap_or(true);
 
     if args.once {
-        std::process::exit(run_once(&targets, timeout, warn_days, critical_days));
+        std::process::exit(run_once(
+            &targets,
+            timeout,
+            warn_days,
+            critical_days,
+            check_revocation,
+        ));
     }
 
     if let Some(addr) = &args.serve {
         let interval = interval.unwrap_or(300);
-        if let Err(e) = web::serve(addr, targets, timeout, warn_days, critical_days, interval) {
+        if let Err(e) = web::serve(
+            addr,
+            targets,
+            timeout,
+            warn_days,
+            critical_days,
+            interval,
+            check_revocation,
+        ) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
@@ -211,7 +237,7 @@ fn main() {
     let mut app = App::new(warn_days, critical_days);
 
     eprintln!("Scanning {} targets ...", targets.len());
-    let (handle, progress) = check_all_async(targets.clone(), timeout);
+    let (handle, progress) = check_all_async(targets.clone(), timeout, check_revocation);
     while !handle.is_finished() {
         let n = progress.load(Ordering::Relaxed);
         eprint!("\r  {}/{} checked so far...", n, targets.len());
@@ -222,7 +248,14 @@ fn main() {
     app.set_results(handle.join().expect("scan thread panicked"));
 
     let mut terminal = ratatui::init();
-    let res = run(&mut terminal, &mut app, targets, timeout, interval);
+    let res = run(
+        &mut terminal,
+        &mut app,
+        targets,
+        timeout,
+        interval,
+        check_revocation,
+    );
     ratatui::restore();
 
     if let Err(e) = res {
@@ -236,12 +269,18 @@ fn main() {
 /// much as for a human running it directly. Output is a plain, aligned
 /// table; when stdout is an actual terminal, the status column is also
 /// colored (never when piped/redirected, so logs stay clean of ANSI codes).
-fn run_once(targets: &[Target], timeout: Duration, warn_days: i64, critical_days: i64) -> i32 {
+fn run_once(
+    targets: &[Target],
+    timeout: Duration,
+    warn_days: i64,
+    critical_days: i64,
+    check_revocation: bool,
+) -> i32 {
     use std::io::IsTerminal;
     let colorize = std::io::stdout().is_terminal();
 
     eprintln!("Scanning {} targets ...", targets.len());
-    let results = check_all(targets, timeout);
+    let results = check_all(targets, timeout, check_revocation);
 
     struct Row {
         label: &'static str,
@@ -249,6 +288,7 @@ fn run_once(targets: &[Target], timeout: Duration, warn_days: i64, critical_days
         target: String,
         days: String,
         expires: String,
+        revocation: &'static str,
         hint: String,
     }
 
@@ -270,9 +310,13 @@ fn run_once(targets: &[Target], timeout: Duration, warn_days: i64, critical_days
                     Status::Error(_) => "-".to_string(),
                 },
                 expires: r.not_after.clone().unwrap_or_else(|| "-".to_string()),
-                hint: match &r.status {
-                    Status::Error(e) => e.clone(),
-                    Status::Ok(_) => r.renewal_hint().to_string(),
+                revocation: r.revocation.label(),
+                hint: match (&r.status, &r.revocation) {
+                    (Status::Error(e), _) => e.clone(),
+                    (_, Revocation::Revoked { .. } | Revocation::Unknown(_)) => {
+                        r.revocation.detail()
+                    }
+                    _ => r.renewal_hint().to_string(),
                 },
             }
         })
@@ -293,8 +337,8 @@ fn run_once(targets: &[Target], timeout: Duration, warn_days: i64, critical_days
         .max(7);
 
     println!(
-        "{:<8} {:<target_w$} {:<days_w$} {:<expires_w$} HINT",
-        "STATUS", "TARGET", "DAYS LEFT", "EXPIRES"
+        "{:<8} {:<target_w$} {:<days_w$} {:<expires_w$} {:<10} HINT",
+        "STATUS", "TARGET", "DAYS LEFT", "EXPIRES", "REVOCATION"
     );
     for r in &rows {
         let label = format!("{:<8}", r.label);
@@ -307,12 +351,24 @@ fn run_once(targets: &[Target], timeout: Duration, warn_days: i64, critical_days
         } else {
             label
         };
+        let revocation = format!("{:<10}", r.revocation);
+        let revocation = if colorize {
+            match r.revocation {
+                "REVOKED" => format!("\x1b[31m{revocation}\x1b[0m"),
+                "UNKNOWN" => format!("\x1b[33m{revocation}\x1b[0m"),
+                "OK" => format!("\x1b[32m{revocation}\x1b[0m"),
+                _ => revocation,
+            }
+        } else {
+            revocation
+        };
         println!(
-            "{label} {:<target_w$} {:<days_w$} {:<expires_w$} {}",
+            "{label} {:<target_w$} {:<days_w$} {:<expires_w$} {revocation} {}",
             r.target, r.days, r.expires, r.hint
         );
     }
 
+    let revoked = rows.iter().filter(|r| r.revocation == "REVOKED").count();
     let worst = rows
         .iter()
         .map(|r| r.severity)
@@ -327,11 +383,12 @@ fn run_once(targets: &[Target], timeout: Duration, warn_days: i64, critical_days
         .filter(|r| r.severity == Severity::Warning)
         .count();
     println!(
-        "\n{} targets checked: {} critical, {} warning, {} ok",
+        "\n{} targets checked: {} critical, {} warning, {} ok, {} revoked",
         rows.len(),
         critical,
         warning,
         rows.len() - critical - warning,
+        revoked,
     );
 
     match worst {
@@ -355,6 +412,7 @@ fn run(
     targets: Vec<Target>,
     timeout: Duration,
     interval: Option<u64>,
+    check_revocation: bool,
 ) -> std::io::Result<()> {
     let mut scan_state = ScanState::Idle;
 
@@ -398,7 +456,8 @@ fn run(
                 KeyCode::Up => app.move_selection(false),
                 KeyCode::Enter => app.show_detail = app.table_state.selected(),
                 KeyCode::Char('r') if matches!(scan_state, ScanState::Idle) => {
-                    let (handle, progress) = check_all_async(targets.clone(), timeout);
+                    let (handle, progress) =
+                        check_all_async(targets.clone(), timeout, check_revocation);
                     scan_state = ScanState::Running(handle, progress);
                 }
                 _ => {}
@@ -410,7 +469,7 @@ fn run(
             && let Some(last) = app.last_scan
             && last.elapsed() >= Duration::from_secs(secs)
         {
-            let (handle, progress) = check_all_async(targets.clone(), timeout);
+            let (handle, progress) = check_all_async(targets.clone(), timeout, check_revocation);
             scan_state = ScanState::Running(handle, progress);
         }
     }
@@ -468,11 +527,19 @@ fn draw(frame: &mut Frame, app: &mut App, scan_progress: Option<u64>, total_targ
                 })
                 .unwrap_or_default();
             let hint = r.renewal_hint();
+            let revocation =
+                Cell::from(r.revocation.label()).style(Style::default().fg(match r.revocation {
+                    Revocation::Revoked { .. } => Color::Red,
+                    Revocation::Unknown(_) => Color::Yellow,
+                    Revocation::Ok => Color::Green,
+                    Revocation::NotChecked => Color::DarkGray,
+                }));
 
             Row::new(vec![
                 Cell::from(days_str),
                 Cell::from(target),
                 Cell::from(expires),
+                revocation,
                 Cell::from(issuer),
                 Cell::from(hint),
             ])
@@ -484,6 +551,7 @@ fn draw(frame: &mut Frame, app: &mut App, scan_progress: Option<u64>, total_targ
         Constraint::Length(16),
         Constraint::Length(28),
         Constraint::Length(12),
+        Constraint::Length(10),
         Constraint::Length(28),
         Constraint::Min(20),
     ];
@@ -493,12 +561,13 @@ fn draw(frame: &mut Frame, app: &mut App, scan_progress: Option<u64>, total_targ
                 "Days Left",
                 "Host:Port",
                 "Expires On",
+                "Revocation",
                 "Issuer",
                 "Renewal hint",
             ])
             .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
         )
-        .block(Block::bordered().title("Certificates, soonest expiry first"))
+        .block(Block::bordered().title("Certificates, revoked first, then soonest expiry"))
         .row_highlight_style(Style::default().reversed())
         .highlight_symbol("> ");
     frame.render_stateful_widget(table, layout[1], &mut app.table_state);
@@ -518,7 +587,7 @@ fn draw(frame: &mut Frame, app: &mut App, scan_progress: Option<u64>, total_targ
 }
 
 fn draw_detail_popup(frame: &mut Frame, result: &CertResult, color: Color) {
-    let area = centered_rect(70, 13, frame.area());
+    let area = centered_rect(70, 16, frame.area());
     frame.render_widget(ratatui::widgets::Clear, area);
 
     let days_line = match result.status {
@@ -547,6 +616,7 @@ fn draw_detail_popup(frame: &mut Frame, result: &CertResult, color: Color) {
                 "Issuer:   {}",
                 result.issuer.as_deref().unwrap_or("-")
             ));
+            lines.push(format!("Revocation: {}", result.revocation.detail()));
             lines.push(String::new());
             lines.push(format!("Hint: {}", result.renewal_hint()));
         }

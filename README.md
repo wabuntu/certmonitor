@@ -16,6 +16,7 @@ $ certmonitor targets.txt                        # interactive TUI
 $ certmonitor --once targets.txt                 # one-shot report for cron/systemd
 $ certmonitor --interval 300 targets.txt         # auto-rescan every 5 minutes
 $ certmonitor --serve 0.0.0.0:8080 targets.txt   # auto-refreshing web page instead of the TUI
+$ certmonitor --no-revocation targets.txt        # skip the CRL revocation check (offline use)
 ```
 
 `targets.txt` is a plain text file, one target per line, as `host` or
@@ -51,6 +52,54 @@ Keys:
 - `Enter`: show details for the selected certificate
 - `r`: rescan now
 - `q` / `Esc`: quit
+
+## Revocation column
+
+certmonitor also checks if a certificate was revoked. It does this with
+CRLs (certificate revocation lists). For the leaf and each intermediate
+certificate on the path, it:
+
+1. reads the CRL URL from the certificate (CRL Distribution Points),
+2. downloads the CRL (DER or PEM) over HTTP(S),
+3. checks the CRL signature with the key of the issuing CA,
+4. looks for the certificate's serial number in the CRL.
+
+The issuing CA's key comes from the chain the server sent, the Mozilla
+root store, or the certificate's "CA Issuers" URL. certmonitor first
+checks that this key really signed the certificate. A CRL with a wrong or
+missing signature is not trusted.
+
+The column shows one of these values:
+
+- `OK` (green): every certificate was checked and none is revoked.
+- `REVOKED` (red): a certificate is on its CA's CRL. The detail view
+  shows which certificate, the revocation date, and the reason if the CRL
+  gives one. Revoked targets are always at the top of the list and count
+  as critical (exit code `2` with `--once`).
+- `UNKNOWN` (yellow): the check could not be done. Examples: the
+  certificate has no CRL URL, the download failed, the CRL could not be
+  parsed, or its signature could not be verified. The detail view and the
+  hint column say why. `UNKNOWN` does not change the row color or the exit
+  code.
+- `-`: the check is off, or the connection itself failed.
+
+Downloads time out after 10 seconds without a response. Each CRL is
+downloaded once and cached until its `nextUpdate` time, for at most one
+hour. Checks run in background threads, so the TUI does not freeze.
+
+Use `--no-revocation` (or `revocation = false` in the config file) to turn
+the check off, for example when you have no network access to the CA.
+
+Limits:
+
+- CRL only. There is no OCSP support. The industry is phasing OCSP out,
+  and some CAs have already stopped it.
+- The result depends on the CA. If a certificate has no CRL URL, the
+  result is `UNKNOWN`. For example, some CAs still put only an OCSP URL
+  in the leaf certificate.
+- Delta CRLs and indirect CRLs are not supported. They give `UNKNOWN`.
+- For an expired certificate the result is `UNKNOWN` unless the CRL still
+  lists it, because CAs remove expired certificates from their CRLs.
 
 ## Web mode
 
@@ -93,6 +142,7 @@ warn_days = 30
 critical_days = 7
 timeout = 5
 interval = 300
+revocation = true
 ```
 
 A `--config <path>` flag points at a different file. Any flag passed on the

@@ -1,3 +1,4 @@
+use crate::revocation::{Revocation, UrlCache, check_chain};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme};
@@ -71,6 +72,9 @@ pub enum Severity {
 }
 
 pub fn severity(result: &CertResult, warn_days: i64, critical_days: i64) -> Severity {
+    if matches!(result.revocation, Revocation::Revoked { .. }) {
+        return Severity::Critical;
+    }
     match result.status {
         Status::Error(_) => Severity::Critical,
         Status::Ok(days) if days < critical_days => Severity::Critical,
@@ -100,6 +104,7 @@ pub struct CertResult {
     pub not_after: Option<String>,
     pub subject: Option<String>,
     pub issuer: Option<String>,
+    pub revocation: Revocation,
 }
 
 impl CertResult {
@@ -161,8 +166,17 @@ fn tls_config() -> Arc<ClientConfig> {
 /// Connect to `target`, complete a TLS handshake, and read the leaf
 /// certificate's validity window. Never panics; every failure mode (DNS,
 /// connect, handshake, parsing) becomes a `Status::Error` in the result.
-pub fn check_target(target: &Target, timeout: Duration, config: &Arc<ClientConfig>) -> CertResult {
-    match check_target_inner(target, timeout, config) {
+///
+/// With `crl_cache` set, every certificate in the presented chain is also
+/// checked against its CRL (see `revocation`); without it the revocation
+/// field is `NotChecked`.
+pub fn check_target(
+    target: &Target,
+    timeout: Duration,
+    config: &Arc<ClientConfig>,
+    crl_cache: Option<&UrlCache>,
+) -> CertResult {
+    match check_target_inner(target, timeout, config, crl_cache) {
         Ok(result) => result,
         Err(e) => CertResult {
             target: target.clone(),
@@ -170,6 +184,7 @@ pub fn check_target(target: &Target, timeout: Duration, config: &Arc<ClientConfi
             not_after: None,
             subject: None,
             issuer: None,
+            revocation: Revocation::NotChecked,
         },
     }
 }
@@ -178,6 +193,7 @@ fn check_target_inner(
     target: &Target,
     timeout: Duration,
     config: &Arc<ClientConfig>,
+    crl_cache: Option<&UrlCache>,
 ) -> Result<CertResult, String> {
     let addr = (target.host.as_str(), target.port)
         .to_socket_addrs()
@@ -215,6 +231,14 @@ fn check_target_inner(
     let now = ASN1Time::now();
     let days_left = (not_after.timestamp() - now.timestamp()) / 86_400;
 
+    let revocation = match crl_cache {
+        Some(cache) => {
+            let chain: Vec<&[u8]> = certs.iter().map(|c| c.as_ref()).collect();
+            check_chain(&chain, cache)
+        }
+        None => Revocation::NotChecked,
+    };
+
     Ok(CertResult {
         target: target.clone(),
         status: Status::Ok(days_left),
@@ -224,20 +248,40 @@ fn check_target_inner(
         }),
         subject: Some(x509.subject().to_string()),
         issuer: Some(x509.issuer().to_string()),
+        revocation,
     })
+}
+
+/// Sort revoked targets first (a revoked cert is broken no matter how long
+/// it has left), then soonest-to-expire first. Errored targets sort last.
+pub fn sort_results(results: &mut [CertResult]) {
+    results.sort_by_key(|r| {
+        let revoked = matches!(r.revocation, Revocation::Revoked { .. });
+        let days = match &r.status {
+            Status::Ok(days) => *days,
+            Status::Error(_) => i64::MAX,
+        };
+        (!revoked, days)
+    });
+}
+
+fn crl_cache(check_revocation: bool) -> Option<&'static UrlCache> {
+    check_revocation.then(UrlCache::global)
 }
 
 /// Check every target concurrently (one thread per target — the list is
 /// expected to be tens to low hundreds of hosts, not thousands), and return
-/// results sorted soonest-to-expire first. Errored targets sort last.
-pub fn check_all(targets: &[Target], timeout: Duration) -> Vec<CertResult> {
+/// results in `sort_results` order.
+pub fn check_all(targets: &[Target], timeout: Duration, check_revocation: bool) -> Vec<CertResult> {
     let config = tls_config();
     let handles: Vec<_> = targets
         .iter()
         .cloned()
         .map(|target| {
             let config = Arc::clone(&config);
-            std::thread::spawn(move || check_target(&target, timeout, &config))
+            std::thread::spawn(move || {
+                check_target(&target, timeout, &config, crl_cache(check_revocation))
+            })
         })
         .collect();
 
@@ -246,10 +290,7 @@ pub fn check_all(targets: &[Target], timeout: Duration) -> Vec<CertResult> {
         .map(|h| h.join().expect("scan thread panicked"))
         .collect();
 
-    results.sort_by_key(|r| match &r.status {
-        Status::Ok(days) => *days,
-        Status::Error(_) => i64::MAX,
-    });
+    sort_results(&mut results);
     results
 }
 
@@ -259,6 +300,7 @@ pub fn check_all(targets: &[Target], timeout: Duration) -> Vec<CertResult> {
 pub fn check_all_async(
     targets: Vec<Target>,
     timeout: Duration,
+    check_revocation: bool,
 ) -> (
     std::thread::JoinHandle<Vec<CertResult>>,
     Arc<std::sync::atomic::AtomicU64>,
@@ -273,7 +315,8 @@ pub fn check_all_async(
                 let config = Arc::clone(&config);
                 let progress = Arc::clone(&progress_for_scan);
                 std::thread::spawn(move || {
-                    let result = check_target(&target, timeout, &config);
+                    let result =
+                        check_target(&target, timeout, &config, crl_cache(check_revocation));
                     progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     result
                 })
@@ -285,10 +328,7 @@ pub fn check_all_async(
             .map(|h| h.join().expect("scan thread panicked"))
             .collect();
 
-        results.sort_by_key(|r| match &r.status {
-            Status::Ok(days) => *days,
-            Status::Error(_) => i64::MAX,
-        });
+        sort_results(&mut results);
         results
     });
     (handle, progress)
@@ -333,7 +373,43 @@ mod tests {
             port: 1, // nothing listens here
         };
         let config = tls_config();
-        let result = check_target(&target, Duration::from_millis(500), &config);
+        let result = check_target(&target, Duration::from_millis(500), &config, None);
         assert!(matches!(result.status, Status::Error(_)));
+        assert_eq!(result.revocation, Revocation::NotChecked);
+    }
+
+    fn result(host: &str, days: i64, revocation: Revocation) -> CertResult {
+        CertResult {
+            target: Target {
+                host: host.to_string(),
+                port: 443,
+            },
+            status: Status::Ok(days),
+            not_after: None,
+            subject: None,
+            issuer: None,
+            revocation,
+        }
+    }
+
+    #[test]
+    fn revoked_targets_sort_first_and_are_critical() {
+        let revoked = Revocation::Revoked {
+            which: "leaf".to_string(),
+            subject: "CN=x".to_string(),
+            date: "2026-10-19".to_string(),
+            reason: None,
+        };
+        let mut results = vec![
+            result("soon", 3, Revocation::Ok),
+            result("revoked", 300, revoked),
+            result("later", 100, Revocation::Unknown("x".to_string())),
+        ];
+        sort_results(&mut results);
+        let order: Vec<&str> = results.iter().map(|r| r.target.host.as_str()).collect();
+        assert_eq!(order, ["revoked", "soon", "later"]);
+        assert_eq!(severity(&results[0], 30, 7), Severity::Critical);
+        // UNKNOWN does not change the expiry-based severity.
+        assert_eq!(severity(&results[2], 30, 7), Severity::Ok);
     }
 }
