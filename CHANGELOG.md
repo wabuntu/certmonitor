@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/wabuntu/certmonitor/compare/v0.1.1...v0.2.0) (2026-10-22)
+
+
+### Features
+
+* add CRL-based revocation check for the whole chain ([#3](https://github.com/wabuntu/certmonitor/issues/3)) ([a6fdcb0](https://github.com/wabuntu/certmonitor/commit/a6fdcb0003580eb91b04438be4391669c484e357))
+
 ## [0.1.1](https://github.com/wabuntu/certmonitor/compare/v0.1.0...v0.1.1) (2026-08-19)
 
 
